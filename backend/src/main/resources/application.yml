@@ -1,0 +1,42 @@
+app:
+  gemini-api-key: "AIzaSyCkysPC2IHNDs8-0Rg1GRt6Wg6Nj-QXnc4"
+  user-agent: "ReddiSearch/1.0"
+
+server:
+  port: 8080
+  servlet:
+    context-path: /
+
+spring:
+  application:
+    name: reddisearch
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+    default-property-inclusion: NON_NULL
+  web:
+    resources:
+      add-mappings: true
+
+logging:
+  level:
+    com.example.reddisearch: INFO
+    org.springframework.web.client: WARN
+    org.springframework.web: INFO
+    root: INFO
+  pattern:
+    console: "%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: when-authorized
+
+# HTTP client configuration
+http:
+  client:
+    connection-timeout: 30000
+    read-timeout: 60000

@@ -3,70 +3,45 @@ import './App.css';
 
 function App() {
   const [searchQuery, setSearchQuery] = useState('');
-  const [results, setResults] = useState([]);
+  const [subreddit, setSubreddit] = useState('');
+  const [result, setResult] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
-
-  const sampleResults = [
-    {
-      id: 1,
-      title: "What's your favorite programming language?",
-      subreddit: "r/programming",
-      upvotes: 1542,
-      comments: 328,
-    },
-    {
-      id: 2,
-      title:
-        "TIL that honey never spoils. Archaeologists have found pots of honey in ancient Egyptian tombs that are over 3,000 years old and still perfectly good to eat.",
-      subreddit: "r/todayilearned",
-      upvotes: 24567,
-      comments: 1203,
-    },
-    {
-      id: 3,
-      title: "What's a small thing that makes your day better?",
-      subreddit: "r/AskReddit",
-      upvotes: 9876,
-      comments: 5432,
-    },
-    {
-      id: 4,
-      title: "Programmers, what's the most beautiful piece of code you've ever written?",
-      subreddit: "r/coding",
-      upvotes: 3421,
-      comments: 892,
-    },
-    {
-      id: 5,
-      title: "What's the best way to learn JavaScript in 2023?",
-      subreddit: "r/learnprogramming",
-      upvotes: 782,
-      comments: 341,
-    },
-  ];
+  const [error, setError] = useState(null);
 
   const handleSearch = () => {
     if (!searchQuery.trim()) {
-      setResults([]);
+      setResult(null);
       setHasSearched(false);
+      setError(null);
       return;
     }
 
     setIsLoading(true);
     setHasSearched(true);
+    setError(null);
 
-    setTimeout(() => {
+    const apiUrl = subreddit 
+      ? `http://localhost:8080/api/search?q=${encodeURIComponent(searchQuery)}&subreddit=${encodeURIComponent(subreddit)}`
+      : `http://localhost:8080/api/search?q=${encodeURIComponent(searchQuery)}`;
 
-      const filteredResults = sampleResults.filter(
-        (result) =>
-          result.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          result.subreddit.toLowerCase().includes(searchQuery.toLowerCase())
-      );
-
-      setResults(filteredResults);
-      setIsLoading(false);
-    }, 800); 
+    fetch(apiUrl)
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
+        }
+        return response.json();
+      })
+      .then((data) => {
+        setResult(data);
+        setIsLoading(false);
+      })
+      .catch((error) => {
+        console.error('Fetch error:', error);
+        setError(error.message);
+        setResult(null);
+        setIsLoading(false);
+      });
   };
 
   const handleKeyPress = (e) => {
@@ -90,6 +65,14 @@ function App() {
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyPress={handleKeyPress}
           />
+          <input
+            type="text"
+            className="search-bar"
+            placeholder="Optional: subreddit (e.g. programming)"
+            value={subreddit}
+            onChange={(e) => setSubreddit(e.target.value.replace(/\s+/g, ''))}
+            onKeyPress={handleKeyPress}
+          />
           <button className="search-button" onClick={handleSearch}>
             Search
           </button>
@@ -100,22 +83,23 @@ function App() {
             <div className="loading">
               <div className="loading-spinner"></div>
             </div>
-          ) : hasSearched && results.length === 0 ? (
+          ) : error ? (
+            <p className="error-message">Error: {error}</p>
+          ) : hasSearched && !result ? (
             <p className="no-results">
               No results found for "{searchQuery}". Try a different search term.
             </p>
-          ) : (
-            results.map((result) => (
-              <div key={result.id} className="result-item">
-                <h3>{result.title}</h3>
-                <div className="result-meta">
-                  <span className="subreddit">{result.subreddit}</span>
-                  <span className="upvotes">👍 {result.upvotes}</span>
-                  <span className="comments">💬 {result.comments}</span>
-                </div>
+          ) : result ? (
+            <div className="result-item">
+              <h3>Question: {result.query}</h3>
+              <div className="answer" style={{whiteSpace: 'pre-wrap'}}>
+                {result.answer}
               </div>
-            ))
-          )}
+              <div className="result-meta">
+                Processed in {result.processingTimeMs}ms
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>
