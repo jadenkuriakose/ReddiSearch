@@ -4,6 +4,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.client.RestClientException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -49,15 +50,39 @@ public class VectorSearchService {
         public Map<String, Double> getVector() { return vector; }
         public double getMagnitude() { return magnitude; }
     }
+    
+    public static class SearchResult {
+        private final String answer;
+        private final int postsFound;
+        
+        public SearchResult(String answer, int postsFound) {
+            this.answer = answer;
+            this.postsFound = postsFound;
+        }
+        
+        public String getAnswer() { return answer; }
+        public int getPostsFound() { return postsFound; }
+    }
 
+    // Keep backward compatibility
     public String answerQuery(String query, String userSubreddit) {
+        return answerQueryWithDetails(query, userSubreddit).getAnswer();
+    }
+    
+    public SearchResult answerQueryWithDetails(String query, String userSubreddit) {
         try {
+            // Add rate limiting
+            if (appConfig.getRateLimitDelayMs() > 0) {
+                Thread.sleep(appConfig.getRateLimitDelayMs());
+            }
+            
             List<RedditPost> posts = redditScraperService.searchRedditPosts(query, 15, userSubreddit);
             
             if (posts.isEmpty()) {
-                return "I couldn't find relevant discussions. " + 
+                String fallbackMessage = "I couldn't find relevant discussions. " + 
                        (userSubreddit != null ? "Try a different subreddit or " : "") +
                        "try searching r/learnprogramming or r/programming directly.";
+                return new SearchResult(fallbackMessage, 0);
             }
             
             buildVocabulary(posts, query);
@@ -78,6 +103,10 @@ public class VectorSearchService {
                 .limit(4)
                 .collect(Collectors.toList());
             
+            if (relevantDocs.isEmpty()) {
+                return new SearchResult("I found some posts but couldn't match them well to your query. Try rephrasing your question.", posts.size());
+            }
+            
             String context = relevantDocs.stream()
                 .map(doc -> String.format("Post from r/%s (Score: %d, Comments: %d):\nTitle: %s\nContent: %s\n---",
                     doc.getPost().getSubreddit(),
@@ -89,17 +118,29 @@ public class VectorSearchService {
                         doc.getPost().getContent()))
                 .collect(Collectors.joining("\n\n"));
             
-            return generateAnswerWithGemini(query, context);
+            String answer = generateAnswerWithGemini(query, context);
+            return new SearchResult(answer, posts.size());
             
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return new SearchResult("Search was interrupted. Please try again.", 0);
         } catch (Exception e) {
             System.err.println("Error in answerQuery: " + e.getMessage());
-            return "Sorry, I encountered an error while processing your query: " + e.getMessage();
+            e.printStackTrace();
+            return new SearchResult("Sorry, I encountered an error while processing your query: " + e.getMessage(), 0);
         }
     }
 
     public String generateGeminiResponse(String prompt, double temperature, int maxTokens) {
         try {
-            String url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=" + appConfig.getGeminiApiKey();
+            // Check if Gemini API key is configured
+            if (appConfig.getGeminiApiKey() == null || appConfig.getGeminiApiKey().trim().isEmpty()) {
+                System.err.println("Gemini API key not configured");
+                return null;
+            }
+            
+            String url = "https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key=" + appConfig.getGeminiApiKey();
+
             
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
@@ -118,6 +159,11 @@ public class VectorSearchService {
             HttpEntity<String> entity = new HttpEntity<>(requestBody.toString(), headers);
             ResponseEntity<String> response = restTemplate.exchange(url, HttpMethod.POST, entity, String.class);
             
+            if (!response.getStatusCode().is2xxSuccessful()) {
+                System.err.println("Gemini API returned status: " + response.getStatusCode());
+                return null;
+            }
+            
             JsonNode root = objectMapper.readTree(response.getBody());
             JsonNode candidates = root.path("candidates");
             
@@ -130,9 +176,16 @@ public class VectorSearchService {
                     return parts_response.get(0).path("text").asText();
                 }
             }
+            
+            System.err.println("No valid response from Gemini API");
+            return null;
+            
+        } catch (RestClientException e) {
+            System.err.println("Network error calling Gemini API: " + e.getMessage());
             return null;
         } catch (Exception e) {
             System.err.println("Error calling Gemini API: " + e.getMessage());
+            e.printStackTrace();
             return null;
         }
     }
@@ -222,7 +275,16 @@ public class VectorSearchService {
                 query, context
             );
 
-            return generateGeminiResponse(prompt, 0.7, 500);
+            String geminiResponse = generateGeminiResponse(prompt, 0.7, 500);
+            
+            if (geminiResponse != null && !geminiResponse.trim().isEmpty()) {
+                return geminiResponse;
+            } else {
+                // Fallback response when Gemini fails
+                return "I found some relevant Reddit discussions, but couldn't generate a comprehensive answer. " +
+                       "Here's a summary of what I found: " + 
+                       context.substring(0, Math.min(300, context.length())) + "...";
+            }
             
         } catch (Exception e) {
             System.err.println("Error generating answer with Gemini: " + e.getMessage());

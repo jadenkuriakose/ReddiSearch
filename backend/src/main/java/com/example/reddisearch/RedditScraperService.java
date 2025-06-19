@@ -4,13 +4,14 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.client.RestClientException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.example.reddisearch.ReddisearchApplication.AppConfig;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Service
@@ -22,10 +23,8 @@ public class RedditScraperService {
     @Autowired
     private AppConfig appConfig;
     
-    @Autowired
-    private VectorSearchService vectorSearchService;
-    
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private static final String REDDIT_BASE_URL = "https://www.reddit.com";
 
     public static class RedditPost {
         private String title;
@@ -54,189 +53,226 @@ public class RedditScraperService {
         public String getCombinedText() {
             return title + "\n\n" + content;
         }
-        
-        public String getFullText() {
-            return String.format("Subreddit: r/%s\nTitle: %s\nContent: %s\nScore: %d Comments: %d", 
-                subreddit, title, content, score, comments);
-        }
     }
 
     public List<RedditPost> searchRedditPosts(String query, int limit, String userSubreddit) {
         try {
-            String subreddit;
-            if (userSubreddit != null && !userSubreddit.trim().isEmpty()) {
-                subreddit = userSubreddit.trim().replaceAll("^r/", "");
+            String subreddit = (userSubreddit != null && !userSubreddit.trim().isEmpty()) ? 
+                userSubreddit.trim().replaceAll("^r/", "") : "all";
+            
+            List<RedditPost> allPosts = new ArrayList<>();
+            
+            // Try both search and recent posts for better results
+            if (query != null && !query.trim().isEmpty()) {
+                // First try searching for the query
+                allPosts.addAll(searchRedditByQuery(query, subreddit, limit));
+                
+                // If we don't have enough posts, get recent posts and filter
+                if (allPosts.size() < limit) {
+                    List<RedditPost> recentPosts = fetchRecentPosts(subreddit, limit * 2);
+                    List<RedditPost> filteredPosts = filterPostsByQuery(recentPosts, query);
+                    
+                    // Add posts that aren't already in our list
+                    for (RedditPost post : filteredPosts) {
+                        if (allPosts.stream().noneMatch(p -> p.getUrl().equals(post.getUrl()))) {
+                            allPosts.add(post);
+                        }
+                    }
+                }
             } else {
-                String geminiSuggestedSub = getOptimalSubredditFromGemini(query);
-                subreddit = (geminiSuggestedSub != null && !geminiSuggestedSub.isEmpty()) 
-                    ? geminiSuggestedSub 
-                    : findRelevantSubreddit(query);
+                // Just get recent posts if no query
+                allPosts.addAll(fetchRecentPosts(subreddit, limit));
             }
             
-            String url = String.format("https://www.reddit.com/r/%s/hot.json?limit=%d", subreddit, Math.min(limit, 25));
+            return allPosts.stream()
+                .sorted((a, b) -> Integer.compare(b.getScore(), a.getScore()))
+                .limit(limit)
+                .collect(Collectors.toList());
+            
+        } catch (Exception e) {
+            System.err.println("Error scraping Reddit data: " + e.getMessage());
+            e.printStackTrace();
+            return Collections.emptyList();
+        }
+    }
+    
+    private List<RedditPost> searchRedditByQuery(String query, String subreddit, int limit) {
+        try {
+            String encodedQuery = URLEncoder.encode(query, StandardCharsets.UTF_8);
+            String searchUrl = String.format("%s/r/%s/search.json?q=%s&restrict_sr=1&sort=relevance&limit=%d", 
+                REDDIT_BASE_URL, subreddit, encodedQuery, Math.min(limit, appConfig.getMaxPostsPerRequest()));
             
             HttpHeaders headers = new HttpHeaders();
             headers.set("User-Agent", appConfig.getUserAgent());
-            headers.set("Accept", "application/json");
+            HttpEntity<String> entity = new HttpEntity<>(headers);
+            
+            ResponseEntity<String> response = restTemplate.exchange(searchUrl, HttpMethod.GET, entity, String.class);
+            
+            if (response.getStatusCode().is2xxSuccessful()) {
+                return parseRedditJson(response.getBody(), subreddit);
+            }
+            
+        } catch (RestClientException e) {
+            System.err.println("Network error searching Reddit: " + e.getMessage());
+        } catch (Exception e) {
+            System.err.println("Error searching Reddit by query: " + e.getMessage());
+        }
+        
+        return Collections.emptyList();
+    }
+    
+    private List<RedditPost> fetchRecentPosts(String subreddit, int limit) {
+        try {
+            String url = String.format("%s/r/%s/new.json?limit=%d", 
+                REDDIT_BASE_URL, subreddit, Math.min(limit, appConfig.getMaxPostsPerRequest()));
+            
+            HttpHeaders headers = new HttpHeaders();
+            headers.set("User-Agent", appConfig.getUserAgent());
             HttpEntity<String> entity = new HttpEntity<>(headers);
             
             ResponseEntity<String> response = restTemplate.exchange(url, HttpMethod.GET, entity, String.class);
             
-            List<RedditPost> posts = parseRedditJson(response.getBody(), subreddit);
-            
-            if (posts.size() < 3 && (userSubreddit == null || userSubreddit.trim().isEmpty())) {
-                posts.addAll(searchBackupSubreddits(query, limit - posts.size()));
+            if (response.getStatusCode().is2xxSuccessful()) {
+                return parseRedditJson(response.getBody(), subreddit);
             }
             
-            return posts.stream().limit(limit).collect(Collectors.toList());
-            
+        } catch (RestClientException e) {
+            System.err.println("Network error fetching recent posts: " + e.getMessage());
         } catch (Exception e) {
-            System.err.println("Error scraping Reddit data: " + e.getMessage());
-            return searchBackupSubreddits(query, limit);
+            System.err.println("Error fetching recent posts: " + e.getMessage());
         }
-    }
-
-    private String getOptimalSubredditFromGemini(String query) {
-        try {
-            String prompt = String.format(
-                "Suggest the single most relevant Reddit subreddit for this query: '%s'. " +
-                "Return only the subreddit name without r/ prefix or any other text. " +
-                "Choose from popular, active subreddits that would have good discussions.",
-                query
-            );
-
-            String response = vectorSearchService.generateGeminiResponse(prompt, 0.3, 30);
-            if (response != null) {
-                // Clean and validate the response
-                String cleaned = response.trim()
-                    .replaceAll("^r/", "")
-                    .replaceAll("[^a-zA-Z0-9]", "")
-                    .toLowerCase();
-                if (!cleaned.isEmpty() && cleaned.length() <= 20) {
-                    return cleaned;
-                }
-            }
-        } catch (Exception e) {
-            System.err.println("Error getting subreddit suggestion from Gemini: " + e.getMessage());
-        }
-        return null;
-    }
-
-    private String findRelevantSubreddit(String query) {
-        Map<String, String> keywordToSubreddit = new HashMap<>();
-        keywordToSubreddit.put("programming", "programming");
-        keywordToSubreddit.put("code", "programming");
-        keywordToSubreddit.put("java", "java");
-        keywordToSubreddit.put("python", "Python");
-        keywordToSubreddit.put("javascript", "javascript");
-        keywordToSubreddit.put("technology", "technology");
-        keywordToSubreddit.put("tech", "technology");
-        keywordToSubreddit.put("science", "science");
-        keywordToSubreddit.put("cooking", "Cooking");
-        keywordToSubreddit.put("recipe", "recipes");
-        keywordToSubreddit.put("fitness", "Fitness");
-        keywordToSubreddit.put("workout", "Fitness");
-        keywordToSubreddit.put("travel", "travel");
-        keywordToSubreddit.put("movies", "movies");
-        keywordToSubreddit.put("film", "movies");
-        keywordToSubreddit.put("books", "books");
-        keywordToSubreddit.put("reading", "books");
-        keywordToSubreddit.put("music", "Music");
-        keywordToSubreddit.put("gaming", "gaming");
-        keywordToSubreddit.put("game", "gaming");
-        keywordToSubreddit.put("health", "Health");
-        keywordToSubreddit.put("money", "personalfinance");
-        keywordToSubreddit.put("finance", "personalfinance");
-        keywordToSubreddit.put("career", "careerguidance");
-        keywordToSubreddit.put("job", "jobs");
         
-        String lowerQuery = query.toLowerCase();
-        for (Map.Entry<String, String> entry : keywordToSubreddit.entrySet()) {
-            if (lowerQuery.contains(entry.getKey())) {
-                return entry.getValue();
-            }
+        return Collections.emptyList();
+    }
+    
+    private List<RedditPost> filterPostsByQuery(List<RedditPost> posts, String query) {
+        if (query == null || query.trim().isEmpty()) {
+            return posts;
         }
-        return "AskReddit";
+        
+        String queryLower = query.toLowerCase();
+        return posts.stream()
+            .filter(post -> post.getTitle().toLowerCase().contains(queryLower) || 
+                          post.getContent().toLowerCase().contains(queryLower))
+            .collect(Collectors.toList());
     }
 
-    private List<RedditPost> parseRedditJson(String jsonResponse, String subreddit) {
+    private List<RedditPost> parseRedditJson(String jsonResponse, String subreddit) throws Exception {
+        JsonNode root = objectMapper.readTree(jsonResponse);
+        JsonNode posts = root.path("data").path("children");
+        
+        List<RedditPost> redditPosts = new ArrayList<>();
+        
+        for (JsonNode post : posts) {
+            JsonNode data = post.path("data");
+            String title = data.path("title").asText("");
+            String content = data.path("selftext").asText("");
+            String url = REDDIT_BASE_URL + data.path("permalink").asText("");
+            String actualSubreddit = data.path("subreddit").asText(subreddit);
+            int score = data.path("score").asInt(0);
+            int comments = data.path("num_comments").asInt(0);
+            
+            // Skip deleted or removed posts
+            if (title.equals("[deleted]") || title.equals("[removed]") || 
+                content.equals("[deleted]") || content.equals("[removed]")) {
+                continue;
+            }
+            
+            // Only include posts with some content or reasonable engagement
+            if (!title.trim().isEmpty() && (score > 0 || comments > 0 || !content.trim().isEmpty())) {
+                redditPosts.add(new RedditPost(title, content, url, actualSubreddit, score, comments));
+            }
+        }
+        
+        return redditPosts;
+    }
+    
+    /**
+     * Get trending/hot posts from a subreddit
+     */
+    public List<RedditPost> getHotPosts(String subreddit, int limit) {
         try {
-            JsonNode root = objectMapper.readTree(jsonResponse);
-            JsonNode posts = root.path("data").path("children");
+            String cleanSubreddit = (subreddit != null && !subreddit.trim().isEmpty()) ? 
+                subreddit.trim().replaceAll("^r/", "") : "all";
             
-            List<RedditPost> redditPosts = new ArrayList<>();
+            String url = String.format("%s/r/%s/hot.json?limit=%d", 
+                REDDIT_BASE_URL, cleanSubreddit, Math.min(limit, appConfig.getMaxPostsPerRequest()));
             
-            for (JsonNode post : posts) {
-                JsonNode data = post.path("data");
-                String title = data.path("title").asText("");
-                String content = data.path("selftext").asText("");
-                String url = "https://reddit.com" + data.path("permalink").asText("");
-                int score = data.path("score").asInt(0);
-                int comments = data.path("num_comments").asInt(0);
-                
-                content = cleanRedditText(content);
-                
-                if ((!content.isEmpty() && content.length() > 30) || (score > 10 && comments > 5)) {
-                    if (content.isEmpty()) {
-                        content = "This post had high engagement but no text content.";
-                    }
-                    redditPosts.add(new RedditPost(title, content, url, subreddit, score, comments));
-                }
+            HttpHeaders headers = new HttpHeaders();
+            headers.set("User-Agent", appConfig.getUserAgent());
+            HttpEntity<String> entity = new HttpEntity<>(headers);
+            
+            ResponseEntity<String> response = restTemplate.exchange(url, HttpMethod.GET, entity, String.class);
+            
+            if (response.getStatusCode().is2xxSuccessful()) {
+                return parseRedditJson(response.getBody(), cleanSubreddit);
             }
             
-            return redditPosts.stream()
-                .sorted((a, b) -> Integer.compare(
-                    (b.getScore() + b.getComments() * 2), 
-                    (a.getScore() + a.getComments() * 2)))
-                .collect(Collectors.toList());
-            
+        } catch (RestClientException e) {
+            System.err.println("Network error fetching hot posts: " + e.getMessage());
         } catch (Exception e) {
-            System.err.println("Error parsing Reddit JSON: " + e.getMessage());
-            return new ArrayList<>();
+            System.err.println("Error fetching hot posts: " + e.getMessage());
         }
+        
+        return Collections.emptyList();
     }
-
-    private List<RedditPost> searchBackupSubreddits(String query, int limit) {
-        String[] backupSubs = {"AskReddit", "explainlikeimfive", "LifeProTips", "todayilearned"};
+    
+    /**
+     * Get top posts from a subreddit with time filter
+     */
+    public List<RedditPost> getTopPosts(String subreddit, int limit, String timeFilter) {
+        try {
+            String cleanSubreddit = (subreddit != null && !subreddit.trim().isEmpty()) ? 
+                subreddit.trim().replaceAll("^r/", "") : "all";
+            
+            // Valid time filters: hour, day, week, month, year, all
+            String validTimeFilter = (timeFilter != null && 
+                Arrays.asList("hour", "day", "week", "month", "year", "all").contains(timeFilter.toLowerCase())) 
+                ? timeFilter.toLowerCase() : "day";
+            
+            String url = String.format("%s/r/%s/top.json?t=%s&limit=%d", 
+                REDDIT_BASE_URL, cleanSubreddit, validTimeFilter, Math.min(limit, appConfig.getMaxPostsPerRequest()));
+            
+            HttpHeaders headers = new HttpHeaders();
+            headers.set("User-Agent", appConfig.getUserAgent());
+            HttpEntity<String> entity = new HttpEntity<>(headers);
+            
+            ResponseEntity<String> response = restTemplate.exchange(url, HttpMethod.GET, entity, String.class);
+            
+            if (response.getStatusCode().is2xxSuccessful()) {
+                return parseRedditJson(response.getBody(), cleanSubreddit);
+            }
+            
+        } catch (RestClientException e) {
+            System.err.println("Network error fetching top posts: " + e.getMessage());
+        } catch (Exception e) {
+            System.err.println("Error fetching top posts: " + e.getMessage());
+        }
+        
+        return Collections.emptyList();
+    }
+    
+    /**
+     * Search across multiple subreddits
+     */
+    public List<RedditPost> searchMultipleSubreddits(String query, List<String> subreddits, int limitPerSubreddit) {
         List<RedditPost> allPosts = new ArrayList<>();
         
-        for (String sub : backupSubs) {
-            try {
-                String url = String.format("https://www.reddit.com/r/%s/hot.json?limit=10", sub);
-                HttpHeaders headers = new HttpHeaders();
-                headers.set("User-Agent", appConfig.getUserAgent());
-                HttpEntity<String> entity = new HttpEntity<>(headers);
-                
-                ResponseEntity<String> response = restTemplate.exchange(url, HttpMethod.GET, entity, String.class);
-                allPosts.addAll(parseRedditJson(response.getBody(), sub));
-                
-                if (allPosts.size() >= limit) break;
-                
-                Thread.sleep(500);
-                
-            } catch (Exception e) {
-                System.err.println("Error with backup subreddit " + sub + ": " + e.getMessage());
-            }
+        for (String subreddit : subreddits) {
+            List<RedditPost> posts = searchRedditPosts(query, limitPerSubreddit, subreddit);
+            allPosts.addAll(posts);
         }
         
-        return allPosts.stream().limit(limit).collect(Collectors.toList());
-    }
-
-    private String cleanRedditText(String text) {
-        if (text == null) return "";
-        
-        text = text.replaceAll("\\*\\*(.*?)\\*\\*", "$1");
-        text = text.replaceAll("\\*(.*?)\\*", "$1");
-        text = text.replaceAll("~~(.*?)~~", "$1");
-        text = text.replaceAll("\\[(.*?)\\]\\(.*?\\)", "$1");
-        
-        text = text.replaceAll("\\n{3,}", "\n\n");
-        text = text.trim();
-        
-        if (text.length() > 1000) {
-            text = text.substring(0, 1000) + "...";
-        }
-        
-        return text;
+        // Sort by score and remove duplicates
+        return allPosts.stream()
+            .collect(Collectors.toMap(
+                RedditPost::getUrl,
+                post -> post,
+                (existing, replacement) -> existing.getScore() > replacement.getScore() ? existing : replacement
+            ))
+            .values()
+            .stream()
+            .sorted((a, b) -> Integer.compare(b.getScore(), a.getScore()))
+            .collect(Collectors.toList());
     }
 }
