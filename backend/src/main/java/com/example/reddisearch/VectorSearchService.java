@@ -266,9 +266,9 @@ public class VectorSearchService {
     private String generateAnswerWithGemini(String query, String context) {
         try {
             String prompt = String.format(
-                "You are a helpful assistant that answers questions based on Reddit discussions. " +
-                "Use the provided Reddit posts to answer the user's question. Be conversational and mention " +
-                "when information comes from highly upvoted posts or active discussions. " +
+                "You are a helpful assistant that answers questions based on Reddit discussions in natural human language" +
+                "Use the provided Reddit posts to answer the user's question. Be conversational and do not mention upvotes " +
+                "prefer information with higher upvotes & use all relevant info to provide high level conversational insight in plain text. " +
                 "If the context doesn't contain enough information, say so politely.\n\n" +
                 "Question: %s\n\nRelevant Reddit posts:\n%s\n\n" +
                 "Please provide a helpful answer based on this Reddit content:",
