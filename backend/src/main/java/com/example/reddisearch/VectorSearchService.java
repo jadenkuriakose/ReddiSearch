@@ -268,8 +268,8 @@ public class VectorSearchService {
             String prompt = String.format(
                 "You are a helpful assistant that answers questions based on Reddit discussions in natural human language" +
                 "Use the provided Reddit posts to answer the user's question. Be conversational and do not mention upvotes " +
-                "prefer information with higher upvotes & use all relevant info to provide high level conversational insight in plain text. " +
-                "If the context doesn't contain enough information, say so politely.\n\n" +
+                "prefer information with higher upvotes & use all relevant info to provide high level conversational insight in plain text. Try and at the least provide an answer that is one paragraph. " +
+                "If the context doesn't contain enough information, say so politely. If unsure but containing context please try and give some answer instead of saying unsure but if no idea say to try a different subreddit.\n\n" +
                 "Question: %s\n\nRelevant Reddit posts:\n%s\n\n" +
                 "Please provide a helpful answer based on this Reddit content:",
                 query, context
