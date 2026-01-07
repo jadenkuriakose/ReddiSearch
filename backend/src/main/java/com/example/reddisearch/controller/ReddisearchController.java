@@ -85,8 +85,7 @@ public class ReddisearchController {
     }
     
     @GetMapping("/search")
-    public ResponseEntity<QueryResponse> searchQuestionGet(@RequestParam String q, 
-                                         @RequestParam(required = false) String subreddit) {
+    public ResponseEntity<QueryResponse> searchQuestionGet(@RequestParam String q, @RequestParam(required = false) String subreddit) {
         // Validate input
         if (q == null || q.trim().isEmpty()) {
             return ResponseEntity.badRequest()

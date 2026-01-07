@@ -23,9 +23,10 @@ public class ReddisearchApplication {
     @Component
     public static class AppConfig {
         private String userAgent = "ReddiSearch/1.0";
-        private int maxPostsPerRequest = 25;
-        private int rateLimitDelayMs = 1000;
-        private String geminiApiKey; 
+        private int maxPostsPerRequest = 50;
+        private int rateLimitDelayMs = 200;
+        private String ollamaBaseUrl = "http://localhost:11434";
+        private String ollamaModel = "mistral";
         
         public String getUserAgent() { return userAgent; }
         public void setUserAgent(String userAgent) { this.userAgent = userAgent; }
@@ -36,7 +37,10 @@ public class ReddisearchApplication {
         public int getRateLimitDelayMs() { return rateLimitDelayMs; }
         public void setRateLimitDelayMs(int rateLimitDelayMs) { this.rateLimitDelayMs = rateLimitDelayMs; }
         
-        public String getGeminiApiKey() { return geminiApiKey; }
-        public void setGeminiApiKey(String geminiApiKey) { this.geminiApiKey = geminiApiKey; }
+        public String getOllamaBaseUrl() { return ollamaBaseUrl; }
+        public void setOllamaBaseUrl(String ollamaBaseUrl) { this.ollamaBaseUrl = ollamaBaseUrl; }
+        
+        public String getOllamaModel() { return ollamaModel; }
+        public void setOllamaModel(String ollamaModel) { this.ollamaModel = ollamaModel; }
     }
 }

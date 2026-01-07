@@ -64,16 +64,47 @@ public class RedditScraperService {
             
             // Try both search and recent posts for better results
             if (query != null && !query.trim().isEmpty()) {
-                // First try searching for the query
+                // First try searching for the full query
                 allPosts.addAll(searchRedditByQuery(query, subreddit, limit));
                 
-                // If we don't have enough posts, get recent posts and filter
+                System.out.println("[Scraper] Found " + allPosts.size() + " posts with full query in r/" + subreddit);
+                
+                // If we get very few results, try keyword-based search
+                if (allPosts.size() < limit / 2) {
+                    System.out.println("[Scraper] Low results, trying keyword extraction");
+                    String[] keywords = extractKeywords(query);
+                    for (String keyword : keywords) {
+                        if (keyword.length() > 2) {
+                            List<RedditPost> keywordPosts = searchRedditByQuery(keyword, subreddit, limit);
+                            for (RedditPost post : keywordPosts) {
+                                if (allPosts.stream().noneMatch(p -> p.getUrl().equals(post.getUrl()))) {
+                                    allPosts.add(post);
+                                }
+                            }
+                            if (allPosts.size() >= limit) break;
+                        }
+                    }
+                }
+                
+                // If still low on results, get recent posts and filter
                 if (allPosts.size() < limit) {
-                    List<RedditPost> recentPosts = fetchRecentPosts(subreddit, limit * 2);
+                    System.out.println("[Scraper] Still low, fetching and filtering recent posts");
+                    List<RedditPost> recentPosts = fetchRecentPosts(subreddit, limit * 3);
                     List<RedditPost> filteredPosts = filterPostsByQuery(recentPosts, query);
                     
                     // Add posts that aren't already in our list
                     for (RedditPost post : filteredPosts) {
+                        if (allPosts.stream().noneMatch(p -> p.getUrl().equals(post.getUrl()))) {
+                            allPosts.add(post);
+                        }
+                    }
+                }
+                
+                // Last resort: if subreddit search yielded nothing, try "all" subreddit
+                if (allPosts.size() < 3 && !subreddit.equals("all")) {
+                    System.out.println("[Scraper] Very low results in r/" + subreddit + ", falling back to r/all");
+                    List<RedditPost> allSubredditPosts = searchRedditByQuery(query, "all", limit);
+                    for (RedditPost post : allSubredditPosts) {
                         if (allPosts.stream().noneMatch(p -> p.getUrl().equals(post.getUrl()))) {
                             allPosts.add(post);
                         }
@@ -84,16 +115,44 @@ public class RedditScraperService {
                 allPosts.addAll(fetchRecentPosts(subreddit, limit));
             }
             
-            return allPosts.stream()
+            List<RedditPost> result = allPosts.stream()
                 .sorted((a, b) -> Integer.compare(b.getScore(), a.getScore()))
                 .limit(limit)
                 .collect(Collectors.toList());
+            
+            System.out.println("[Scraper] Final result: " + result.size() + " posts");
+            return result;
             
         } catch (Exception e) {
             System.err.println("Error scraping Reddit data: " + e.getMessage());
             e.printStackTrace();
             return Collections.emptyList();
         }
+    }
+    
+    /**
+     * Extract important keywords from a query for fallback searching
+     */
+    private String[] extractKeywords(String query) {
+        // Remove common words and split
+        String[] parts = query.toLowerCase()
+            .replaceAll("[^a-z0-9\\s]", "")
+            .split("\\s+");
+        
+        List<String> keywords = new ArrayList<>();
+        for (String part : parts) {
+            // Keep words longer than 3 chars that aren't common stop words
+            if (part.length() > 3 && !isCommonStopWord(part)) {
+                keywords.add(part);
+            }
+        }
+        
+        return keywords.toArray(new String[0]);
+    }
+    
+    private boolean isCommonStopWord(String word) {
+        Set<String> stopWords = Set.of("the", "and", "that", "with", "from", "have", "this", "what", "when", "where", "who", "why", "how");
+        return stopWords.contains(word);
     }
     
     private List<RedditPost> searchRedditByQuery(String query, String subreddit, int limit) {
