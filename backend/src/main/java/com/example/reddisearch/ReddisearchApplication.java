@@ -24,22 +24,25 @@ public class ReddisearchApplication {
     public static class AppConfig {
         private String userAgent = "ReddiSearch/1.0";
         private int maxPostsPerRequest = 50;
-        private int rateLimitDelayMs = 200;
+
+        // Minimal tweak: lower default delay
+        private int rateLimitDelayMs = 100;
+
         private String ollamaBaseUrl = "http://localhost:11434";
         private String ollamaModel = "mistral";
-        
+
         public String getUserAgent() { return userAgent; }
         public void setUserAgent(String userAgent) { this.userAgent = userAgent; }
-        
+
         public int getMaxPostsPerRequest() { return maxPostsPerRequest; }
         public void setMaxPostsPerRequest(int maxPostsPerRequest) { this.maxPostsPerRequest = maxPostsPerRequest; }
-        
+
         public int getRateLimitDelayMs() { return rateLimitDelayMs; }
         public void setRateLimitDelayMs(int rateLimitDelayMs) { this.rateLimitDelayMs = rateLimitDelayMs; }
-        
+
         public String getOllamaBaseUrl() { return ollamaBaseUrl; }
         public void setOllamaBaseUrl(String ollamaBaseUrl) { this.ollamaBaseUrl = ollamaBaseUrl; }
-        
+
         public String getOllamaModel() { return ollamaModel; }
         public void setOllamaModel(String ollamaModel) { this.ollamaModel = ollamaModel; }
     }

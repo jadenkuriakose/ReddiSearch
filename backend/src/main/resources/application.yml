@@ -3,7 +3,7 @@ app:
   # Using mistral for faster inference (~30 sec vs 2+ min for mistral)
   # Download with: ollama pull mistral
   ollama-base-url: "http://localhost:11434"
-  ollama-model: "mistral"
+  ollama-model: "phi3:mini"
   max-posts-per-request: 50
   rate-limit-delay-ms: 200
 
